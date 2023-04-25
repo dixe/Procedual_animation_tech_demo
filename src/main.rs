@@ -11,7 +11,8 @@ type V2 = Vector2::<f64>;
 #[derive(Debug)]
 struct Body {
     center: V2,
-    limbs: Vec::<Limb>
+    limbs: Vec::<Limb>,
+    limb_target_offset: V2
 }
 
 #[derive(Debug)]
@@ -56,6 +57,7 @@ fn main() {
 
     let mut body = Body {
         center: V2::new(50.0, y_center),
+        limb_target_offset: V2::new(80.0, 100.0),
         limbs: vec! [
             Limb {
                 upper_leg_len: 80.0,
@@ -77,6 +79,8 @@ fn main() {
         gl.ClearColor(1.0, 1.0, 1.0, 1.0);
     }
 
+    let mut sim = false;
+    let mut angle = 0.0;
     loop {
 
         // rendering
@@ -85,26 +89,41 @@ fn main() {
         }
 
         let vel = V2::new(1.0, 0.0);
-        update(&mut body, vel, 1.0);
+
+        if sim {
+            simulate(&mut body, vel, 1.0);
+        }
+        update_limbs(&mut body);
+
         handle_ui(&mut ui, &mut event_pump);
+
+        if ui.button("Sim") {
+            sim = !sim;
+        };
+
+
+        // Draw body
+
+        draw_body(&mut ui, &body, angle);
+
+        ui.slider(&mut body.limbs[0].target_pos.x, 0.0, 400.0);
+
+        ui.slider(&mut body.center.x, 0.0, 400.0);
+
+        ui.slider(&mut angle, 0.0, std::f32::consts::PI * 2.0);
+
 
         if ui.button("Reset") {
             body.center.x = 15.0;
         };
 
 
-        // Draw body
-
-        draw_body(&mut ui, &body);
-
-        ui.slider(&mut body.limbs[0].target_pos.x, 0.0, 400.0);
-
         window.gl_swap_window();
 
     }
 }
 
-fn draw_body(ui: &mut Ui, body: &Body) {
+fn draw_body(ui: &mut Ui, body: &Body, angle: f32) {
 
     let body_color = Color::Rgb(30,240,30);
     let target_color = Color::Rgb(200,30,30);
@@ -117,6 +136,7 @@ fn draw_body(ui: &mut Ui, body: &Body) {
     draw_with_center(ui, body.center, 30, body_color);
 
 
+    ui.drawer2D.line(body.center.x as i32, body.center.y as i32,  150.0, 20, angle, foot_color);
 
     for limb in &body.limbs {
         draw_with_center(ui, limb.target_pos, 20, target_color);
@@ -144,8 +164,6 @@ fn calc_knee_and_foot_pos(ui: &mut Ui, body_pos: V2, limb: &Limb) -> (V2, V2) {
         return (dir * a + body_pos, dir * total_len as f64 + body_pos);
     }
 
-
-
     let mut alpha = f64::acos((b*b + c*c - a*a) / (2.0 * b * c));
     let beta = f64::acos((a*a + c*c - b*b) / (2.0 * a * c));
 
@@ -166,7 +184,6 @@ fn calc_knee_and_foot_pos(ui: &mut Ui, body_pos: V2, limb: &Limb) -> (V2, V2) {
 
     let c_1 = a_1 + b_1;
 
-    ui.drawer2D.render_text(&format!("{:.2?}", (a_1, b_1, b, s, alpha)), 200, 10);
     (knee_pos, limb.target_pos)
 }
 
@@ -176,7 +193,6 @@ fn draw_with_center(ui: &mut Ui, center: V2, width: i32, color: Color) {
     let w_half = width/2;
 
     ui.drawer2D.rounded_rect_color(center.x as i32 - w_half, center.y as i32 - w_half, width, width, color);
-
 }
 
 
@@ -189,15 +205,15 @@ fn handle_ui(ui: &mut Ui, event_pump: &mut gl_lib::sdl2::EventPump) {
 }
 
 
-
-
-fn update(body: &mut Body, velocity: V2, dt: f64) {
+fn simulate(body: &mut Body, velocity: V2, dt: f64) {
     body.center = body.center + velocity * dt;
+}
 
+fn update_limbs(body: &mut Body) {
     for limb in &mut body.limbs {
         let dist = (body.center - limb.target_pos).norm();
         if dist > limb.upper_leg_len + limb.lower_leg_len {
-            limb.target_pos.x = body.center.x + 80.0;
+            limb.target_pos = body.center + body.limb_target_offset;
         }
     }
 }
