@@ -6,4 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-gl_lib = { path = "../rust-gl-lib"}
+gl_lib = { path = "../rust-gl-lib" }
+deltatime = { git = "https://github.com/dixe/rust-deltatime" }

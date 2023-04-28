@@ -4,6 +4,7 @@ use gl_lib::helpers;
 use gl_lib::gl;
 use gl_lib::imode_gui::*;
 use gl_lib::imode_gui::drawer2d::*;
+use gl_lib::imode_gui::ui::*;
 use gl_lib::color::Color;
 
 type V2 = Vector2::<f64>;
@@ -31,9 +32,11 @@ struct Joint {
 
 #[derive(Debug)]
 enum LimbState {
-    Grounded,
-    Moving
+    Grounded, // foot at target, keep it there
+    Move1((f64, f64)), // we need move our angles to these, as an intermediate
+    MoveToTarget // Move toward the target
 }
+
 
 
 fn main() {
@@ -60,62 +63,41 @@ fn main() {
 
     let y_center = (viewport.h  / 2 - 30) as f64;
 
-    let mut body = Body {
-        center: V2::new(150.0, y_center),
-        limb_target_offset: V2::new(80.0, 100.0),
-        limbs: vec! [
-            Limb {
-                joint0: Joint {
-                    angle: 1.57,
-                    len: 80.0
-                },
-                joint1: Joint {
-                    angle: 1.57,
-                    len: 60.0
-                },
-                state: LimbState::Grounded,
-                target_pos: V2::new(0.0, y_center + 100.0)
-            },
-
-            Limb {
-                joint0: Joint {
-                    angle: 0.0,
-                    len: 80.0
-                },
-                joint1: Joint {
-                    angle: 0.0,
-                    len: 60.0
-                },
-                state: LimbState::Grounded,
-                target_pos: V2::new(80.0, y_center + 100.0)
-            }
-
-            ]
-    };
-
+    let mut body = create_body(50.0, 40.0, y_center);
     let mut event_pump = sdl.event_pump().unwrap();
+
 
     unsafe {
         gl.ClearColor(1.0, 1.0, 1.0, 1.0);
     }
 
-    let mut sim = false;
+    let mut sim = true;
     let mut update = true;
+
+
+    let mut hip_angle = 0.55;
+    let mut knee_angle = 1.45;
+
+
+    let mut delta_time = deltatime::Deltatime::default();
     loop {
 
+        delta_time.update();
         // rendering
         unsafe {
             gl.Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
         }
 
-        let vel = V2::new(1.0, 0.0);
+        // this is unit(px) / sec
+        let vel = V2::new(30.0, 0.0);
 
+        let dt = delta_time.time() as f64;
         if sim {
-            simulate(&mut body, vel, 1.0);
+            simulate(&mut body, vel, dt);
         }
 
         if update {
-            update_limbs(&mut body);
+            update_limbs(&mut body, dt, hip_angle, knee_angle);
         }
 
         handle_ui(&mut ui, &mut event_pump);
@@ -135,6 +117,12 @@ fn main() {
         ui.label("Body X:");
         ui.slider(&mut body.center.x, 0.0, 400.0);
 
+
+        ui.label(&format!("hip_angle ({:.2}):", hip_angle));
+        ui.slider(&mut hip_angle, 0.0, std::f64::consts::PI/2.0);
+
+        ui.label(&format!("knee_angle ({:.2}):", knee_angle));
+        ui.slider(&mut knee_angle, 0.0, std::f64::consts::PI/2.0);
 
         ui.newline();
         ui.label(&format!("Joint0 a({:.2}):", body.limbs[0].joint0.angle));
@@ -158,6 +146,8 @@ fn main() {
 
     }
 }
+
+
 
 
 fn draw_body(ui: &mut Ui, body: &Body) {
@@ -235,7 +225,12 @@ fn draw_limb(ui: &mut Ui, body_center: V2, limb: &Limb) {
 }
 
 
-fn update_joint_angles(body_pos: V2, limb: &mut Limb) {
+struct Angles {
+    hip: f64,
+    knee: f64
+}
+
+fn calc_joint_angles(body_pos: V2, limb: &Limb) -> Angles {
 
     // A is body corner a is opposite of that, so lower leg
     // B is knee corner, b is dist from body to target
@@ -250,10 +245,10 @@ fn update_joint_angles(body_pos: V2, limb: &mut Limb) {
 
     let total_len = a + c;
     if b > total_len {
-        // TODO: hip angle should be pointing towards target, knee angle straight.
-        limb.joint0.angle = std::f64::consts::PI - f64::asin((limb.target_pos.x - body_pos.x) / b);
-        limb.joint1.angle = 0.0;
-        return;
+        return Angles {
+            hip: std::f64::consts::PI - f64::asin((limb.target_pos.x - body_pos.x) / b),
+            knee: 0.0
+        };
     }
 
     // find internal angles in triangle
@@ -273,8 +268,10 @@ fn update_joint_angles(body_pos: V2, limb: &mut Limb) {
 
     }
 
-    limb.joint0.angle = target_a;
-    limb.joint1.angle = std::f64::consts::PI - beta;
+     return Angles {
+         hip: target_a,
+         knee: std::f64::consts::PI - beta
+     };
 
 }
 
@@ -296,14 +293,118 @@ fn simulate(body: &mut Body, velocity: V2, dt: f64) {
     body.center = body.center + velocity * dt;
 }
 
-fn update_limbs(body: &mut Body) {
+fn update_limbs(body: &mut Body, dt: f64, hip_angle: f64, knee_angle: f64) {
+
     for limb in &mut body.limbs {
 
         let dist = (body.center - limb.target_pos).norm();
         if dist > limb.joint0.len + limb.joint1.len {
             limb.target_pos = body.center + body.limb_target_offset;
+            limb.state = LimbState::Move1((hip_angle, knee_angle));
         }
 
-        update_joint_angles(body.center, limb);
+
+        let target_angles = calc_joint_angles(body.center, limb);
+
+        match limb.state {
+            LimbState::Grounded => {
+                limb.joint0.angle = target_angles.hip;
+                limb.joint1.angle = target_angles.knee;
+            },
+            LimbState::Move1((hip,knee)) => {
+
+                let angle_c = calc_angle_changes(hip, knee, limb, dt);
+
+                limb.joint0.angle += angle_c.hip_change;
+                limb.joint1.angle += angle_c.knee_change;
+
+                if angle_c.next_state {
+                    limb.state = LimbState::MoveToTarget;
+                }
+            },
+            LimbState::MoveToTarget => {
+
+                let angle_c = calc_angle_changes(target_angles.hip, target_angles.knee, limb, dt);
+
+                limb.joint0.angle += angle_c.hip_change;
+                limb.joint1.angle += angle_c.knee_change;
+
+                if angle_c.next_state {
+                    limb.state = LimbState::Grounded;
+                }
+            }
+        }
+    }
+}
+
+
+struct AngleChanges {
+    hip_change: f64,
+    knee_change: f64,
+    next_state: bool
+}
+
+fn calc_angle_changes( hip: f64, knee: f64, limb: &Limb, dt: f64) -> AngleChanges {
+
+    let max_change = 5.0 * dt; // radians / sec
+
+    let hip_diff = hip - limb.joint0.angle;
+    let knee_diff = knee - limb.joint1.angle;
+
+    let hip_change = f64::min( max_change, hip_diff.signum()* hip_diff) * hip_diff.signum();
+    let knee_change = f64::min( max_change, knee_diff.signum()* knee_diff) * knee_diff.signum();
+    let mut next_state = false;
+    if hip_diff.abs() < 0.001 && knee_diff.abs() < 0.001 {
+        next_state = true;
+    }
+
+    AngleChanges {
+        hip_change,
+        knee_change,
+        next_state
+    }
+}
+
+fn create_body(upper_leg_len: f64, lower_leg_len: f64, body_y: f64) -> Body {
+
+
+    let legs_len = upper_leg_len + lower_leg_len;
+    let b_center = V2::new(150.0, body_y);
+
+    let floor_h = legs_len * 0.8;
+
+    let target_x = f64::sqrt(legs_len * legs_len - floor_h * floor_h);
+
+    Body {
+        center: b_center,
+        limb_target_offset: V2::new(target_x, floor_h),
+        limbs: vec! [
+            Limb {
+                joint0: Joint {
+                    angle: 1.57,
+                    len: upper_leg_len
+                },
+                joint1: Joint {
+                    angle: 1.57,
+                    len: 40.0
+                },
+                state: LimbState::Grounded,
+                target_pos: V2::new(0.0, floor_h)  + b_center
+            },
+
+            Limb {
+                joint0: Joint {
+                    angle: 0.0,
+                    len: upper_leg_len
+                },
+                joint1: Joint {
+                    angle: 0.0,
+                    len: lower_leg_len
+                },
+                state: LimbState::Grounded,
+                target_pos: V2::new(0.0, floor_h)  + b_center
+            }
+
+        ]
     }
 }
